@@ -19,11 +19,12 @@ from . import bat_glimpse_helpers as helpers
 from . import bat_glimpse_utils as utils
 from .bat_glimpse_plotting import map_imaging, map_mosaic, pc_time, plot_fermi_bat_diagnostic, plot_lc, plot_snr
 
+import subprocess
+import sys
 
 GUANO_DATA_MAX_WAIT_SECONDS = int(os.getenv("BAT_GLIMPSE_GUANO_MAX_WAIT_SECONDS", "10800"))
 GUANO_RETRY_SLEEP_SECONDS = int(os.getenv("BAT_GLIMPSE_GUANO_RETRY_SLEEP_SECONDS", "60"))
 GUANO_MAX_RETRIES = int(os.getenv("BAT_GLIMPSE_GUANO_MAX_RETRIES", "4"))
-
 
 def log_imaging(detected_sources):
     try:
@@ -1050,4 +1051,39 @@ def guano_query(triggertime, ext_obsid, workdir, tmin, tmax, pipe, healpix_nside
             )
             return True
         logging.info(f"obsid: {obsid}, triggertime: {triggertime}, t0_met: {t0_met}")
+
+        db_file = Path(workdir) / "results.db"
+
+        if not db_file.exists():
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "nitrates.data_prep.mkdb",
+                    "--work_dir",
+                    workdir,
+                ],
+                check=True,
+                capture_output=True,
+                text=True
+            )   
+
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "nitrates.data_prep.do_data_setup",
+                "--work_dir",
+                workdir,
+                "--trig_time",
+                triggertime[:-1],
+                "--Obsid_Dir",
+                str(obsid_dir),
+            ],
+            # check=True,
+            capture_output=True,
+            text=True
+        )
+
         return run_analysis(event, t0_met, workdir, tmin, tmax, pipe, local=False, healpix_nside=healpix_nside, skyview_nprocs=skyview_nprocs, mosaic_nprocs=mosaic_nprocs)

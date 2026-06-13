@@ -39,9 +39,6 @@ def load_trigger_metadata(trigid):
     if API is None:
         logging.warning("EchoAPI is not available; continuing without external trigger metadata.")
         return [], []
-    if DEFAULT_API_TOKEN is None:
-        logging.warning("ECHO_API_TOKEN is not set; continuing without external trigger metadata.")
-        return [], []
     api = API(api_token=DEFAULT_API_TOKEN)
     parsed_results = [json.loads(entry) for entry in api.get_trigs()]
     match_ = next((entry for entry in parsed_results if entry.get("trigid") == float(trigid)), None)
@@ -72,11 +69,50 @@ def prepare_runtime(args):
     return workdir, trigid, ext_trig, trig_instr
 
 
+def create_nitrates_config(
+    trigger_time,
+    output_file="config.json",
+    trigger_id=0,
+    queue_id=0,
+):
+
+    config = {
+        "ERRORS": [],
+        "WARNINGS": [],
+        "config": {
+            "BkgPost": "true",
+            "BkgPre": "true",
+            "BkgSrcPosFit": "null",
+            "Epeaks": [97.7, 212.1, 460.6],
+            "Gammas": [0.1, 0.6, 1.1],
+            "MaxDT": 20.48,
+            "MaxDur": 16.384,
+            "MinDT": -20.48,
+            "MinDur": 0.128,
+            "id": 99,
+            "minSNR": 2.5,
+            "name": "Default",
+            "version": "0.0.0",
+        },
+        "queueID": queue_id,
+        "triggerID": trigger_id,
+        "trigtime": trigger_time,
+    }
+
+    with open(output_file, "w") as f:
+        json.dump(config, f, indent=4)
+
+
 def main():
     start_time = time.time()
     print(f"Number of CPU cores available: {multiprocessing.cpu_count()}")
     args = parse_args()
     workdir, trigid, ext_trig, trig_instr = prepare_runtime(args)
+
+    create_nitrates_config(
+        trigger_time=args.trigtime,
+        output_file=os.path.join(args.workdir, "config.json"),
+    )
 
     triggertime = args.trigtime
     tmin = args.tmin
@@ -87,60 +123,19 @@ def main():
     skyview_nprocs = args.skyview_nprocs
     mosaic_nprocs = args.mosaic_nprocs
 
-    if triggertime is None:
+    if triggertime is not None:
         logging.info("Trying using already existing data")
         with open(os.path.join(workdir, "config.json"), "r", encoding="utf-8") as handle:
             config = json.load(handle)
         triggertime = config.get("trigtime")
-        helpers.search_ext_maps(triggertime, workdir)
         fail = False
         start_time_try = time.time()
-        while time.time() - start_time_try < 1800 and not fail:
-            try:
-                logging.info(f"Triggertime from config: {triggertime}")
-                obsid = helpers.get_obsid(triggertime)
-                logging.info(f"ObsID from config: {obsid}")
-                triggertime_z = triggertime + ".000Z" if "." not in triggertime.split("T")[1] else triggertime + "Z"
-                t0_met = Clock(utctime=triggertime_z).met
-                logging.info(f"obsid: {obsid}, triggertime: {triggertime}, t0_met: {t0_met}")
-                download_root = os.path.join(workdir, "bat_downloads")
-                os.makedirs(download_root, exist_ok=True)
-                helpers.ba.datadir(download_root)
-                event = helpers.ba.BatEvent(obsid, is_guano=True)
-                detmask_path = Path(f"{workdir}/detmask.fits")
-                if detmask_path.exists():
-                    event.detector_quality_file = detmask_path
-                else:
-                    logging.info("Local detmask.fits not found; using GUANO-downloaded detector quality file")
-
-                event_path = Path(f"{workdir}/filter_evdata.fits")
-                if event_path.exists():
-                    event.event_files = event_path
-                else:
-                    logging.info("Local filter_evdata.fits not found; using GUANO-downloaded event file")
-
-                attitude_sat_path = Path(f"{workdir}/attitude.sat")
-                attitude_fits_path = Path(f"{workdir}/attitude.fits")
-                if attitude_sat_path.exists():
-                    event.attitude_file = attitude_sat_path
-                    event.attitude = helpers.ba.Attitude.from_file(event.attitude_file)
-                elif attitude_fits_path.exists():
-                    event.attitude_file = attitude_fits_path
-                else:
-                    logging.info("No local attitude file found; using GUANO-downloaded attitude file")
-                event._parse_event_file()
-            except Exception as exc:
-                fail = True
-                logging.error(exc)
-                continue
-            if not fail:
-                fail = guano_query(triggertime, ext_obsid, workdir, tmin, tmax, pipe, healpix_nside, skyview_nprocs, mosaic_nprocs)
-            if fail:
-                time.sleep(60)
-            else:
-                break
-    else:
         helpers.search_ext_maps(triggertime, workdir)
         guano_query(triggertime, ext_obsid, workdir, tmin, tmax, pipe, healpix_nside, skyview_nprocs, mosaic_nprocs)
 
     logging.info(f"Time spent: {time.time() - start_time} seconds")
+    try:
+        log_file = os.path.join(workdir, "batglimpse.log")
+        name_id = os.path.basename(workdir)
+    except Exception:
+        logging.error(f"Error in copying log file: {helpers.traceback.format_exc()}")

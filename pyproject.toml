@@ -9,20 +9,31 @@ description = "Swift BAT GUANO imaging and mosaic pipeline."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "astropy",
-    "BatAnalysis",
+    "BatAnalysis==2.1.0",
+    "astroquery>=0.4.10",
+    "astropy>=4.3.1",
+    "dpath>=2.1.4",
     "emcee",
-    "healpy",
+    "healpy>=1.16.6",
+    "histpy>=2.0.2",
+    "joblib>=1.1.0",
     "ligo-gracedb",
-    "ligo.skymap",
-    "matplotlib",
-    "numpy",
+    "ligo.skymap>=2.1.2",
+    "matplotlib>=3.4.2",
+    "mhealpy>=0.3.5",
+    "nitrates @ git+https://github.com/Swift-BAT/NITRATES.git@main",
+    "numpy>=1.24.4",
     "pandas",
-    "requests",
-    "scipy",
-    "swiftbat",
-    "swifttools",
+    "reproject>=0.13.1",
+    "requests>=2.20",
+    "scipy>=1.7.2",
+    "setuptools>=58.0.4",
+    "swiftbat>=0.1.5",
+    "swifttools==3.0.22",
     "tqdm",
+    "astro-gdt-swift>=1.0.1",
+    "astro-gdt-fermi",
+    "scikit-learn"
 ]
 
 [project.scripts]

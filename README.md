@@ -19,7 +19,7 @@ python -m pip install .
 ```bash
 git clone <repository-url>
 cd BAT-GLIMPSE
-python -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
@@ -42,6 +42,7 @@ python -m batglimpse --workdir /path/to/workdir --trigtime 2026-01-01T00:00:00.0
 
 The pipeline also expects the Swift/BAT analysis environment required by
 `batanalysis` to be configured, including HEASoft/CALDB where applicable.
+BAT Glimpse uses `BatAnalysis==2.1.0` and requires Python 3.10 or newer.
 
 ## Run
 
