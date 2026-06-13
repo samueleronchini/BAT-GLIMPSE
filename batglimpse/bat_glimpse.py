@@ -14,7 +14,7 @@ try:
 except ModuleNotFoundError:
     API = None
 
-from . import bat_glimpse_helpers as helpers
+from . import bat_glimpse_utils as utils
 from .bat_glimpse_pipeline import guano_query
 
 
@@ -32,10 +32,14 @@ def parse_args():
     parser.add_argument("--healpix_nside", type=int, default=512, help="Nside of mosaic healpix map")
     parser.add_argument("--skyview_nprocs", type=int, default=8, help="Number of processes to use when creating skyviews in parallel")
     parser.add_argument("--mosaic_nprocs", type=int, default=8, help="Number of processes to use when creating mosaic in parallel. NOTE: ALLOCATE ~10GB OF MEMORY PER PROCESS.")
+    parser.add_argument("--trig_instr", required=False, type=str, default=None, help="Trigger instrument")
     return parser.parse_args()
 
 
-def load_trigger_metadata(trigid):
+def load_trigger_metadata(trigid, trig_instr):
+    if trig_instr is not None:
+        logging.info(f"Using provided trigger instrument: {trig_instr}")
+        return [], trig_instr
     if API is None:
         logging.warning("EchoAPI is not available; continuing without external trigger metadata.")
         return [], []
@@ -64,8 +68,8 @@ def prepare_runtime(args):
         filemode="w",
         force=True,
     )
-    ext_trig, trig_instr = load_trigger_metadata(trigid)
-    helpers.set_runtime_context(workdir=workdir, trigid=trigid, ext_trig=ext_trig, trig_instr=trig_instr)
+    ext_trig, trig_instr = load_trigger_metadata(trigid, args.trig_instr)
+    utils.set_runtime_context(workdir=workdir, trigid=trigid, ext_trig=ext_trig, trig_instr=trig_instr)
     return workdir, trigid, ext_trig, trig_instr
 
 
@@ -130,7 +134,7 @@ def main():
         triggertime = config.get("trigtime")
         fail = False
         start_time_try = time.time()
-        helpers.search_ext_maps(triggertime, workdir)
+        utils.search_ext_maps(triggertime, workdir)
         guano_query(triggertime, ext_obsid, workdir, tmin, tmax, pipe, healpix_nside, skyview_nprocs, mosaic_nprocs)
 
     logging.info(f"Time spent: {time.time() - start_time} seconds")
@@ -138,4 +142,4 @@ def main():
         log_file = os.path.join(workdir, "batglimpse.log")
         name_id = os.path.basename(workdir)
     except Exception:
-        logging.error(f"Error in copying log file: {helpers.traceback.format_exc()}")
+        logging.error(f"Error in copying log file: {utils.traceback.format_exc()}")

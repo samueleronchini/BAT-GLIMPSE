@@ -15,9 +15,8 @@ from astropy.table import Table, unique, vstack
 from astropy.time import Time, TimeDelta
 from swifttools.swift_too import Data, GUANO, ObsQuery
 
-from . import bat_glimpse_helpers as helpers
 from . import bat_glimpse_utils as utils
-from .bat_glimpse_plotting import map_imaging, map_mosaic, pc_time, plot_fermi_bat_diagnostic, plot_lc, plot_snr
+from .bat_glimpse_plotting import map_imaging, map_mosaic, pc_time, plot_ext_bat_diagnostic, plot_lc, plot_snr
 
 import subprocess
 import sys
@@ -272,7 +271,7 @@ def mosaic(t0, event, workdir, min_time, max_time, healpix_nside=1024, skyview_n
 def read_results(event, t0, workdir):
     mosaic_csv = os.path.join(workdir, "mosaic.csv")
     if os.stat(mosaic_csv).st_size != 0:
-        helpers.sort_csv(workdir, "mosaic.csv")
+        utils.sort_csv(workdir, "mosaic.csv")
         df_sorted = pd.read_csv(mosaic_csv).sort_values(by="SNR", ascending=False)
         ra_max = df_sorted.iloc[0]["RA"]
         dec_max = df_sorted.iloc[0]["Dec"]
@@ -292,19 +291,19 @@ def read_results(event, t0, workdir):
         sign = "+" if df_sorted.iloc[0]["t_start"] > 0 else "-"
         dur = df_sorted.iloc[0]["t_end"] - df_sorted.iloc[0]["t_start"]
         if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-            helpers.post_telegram(os.path.join(workdir, "lc_mosaic.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.\nSource found with mosaic at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {abs(df_sorted.iloc[0]['t_start'])}, duration {dur} s.")
+            utils.post_telegram(os.path.join(workdir, "lc_mosaic.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.\nSource found with mosaic at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {abs(df_sorted.iloc[0]['t_start'])}, duration {dur} s.")
             time.sleep(5)
-            helpers.post_telegram(os.path.join(workdir, "map_mosaic.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
-            helpers.post_telegram(os.path.join(workdir, "mosaic.csv"), f"Tables for mosaic. Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
+            utils.post_telegram(os.path.join(workdir, "map_mosaic.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
+            utils.post_telegram(os.path.join(workdir, "mosaic.csv"), f"Tables for mosaic. Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
         time.sleep(5)
-        helpers.post_slack(os.path.join(workdir, "lc_mosaic.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.\nSource found with mosaic at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {abs(df_sorted.iloc[0]['t_start'])}, duration {dur} s.")
-        helpers.post_slack(os.path.join(workdir, "map_mosaic.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
-        helpers.post_slack(os.path.join(workdir, "mosaic.csv"), f"Tables for mosaic. Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
-        helpers.post_slack(os.path.join(workdir, "pc_time.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
+        utils.post_slack(os.path.join(workdir, "lc_mosaic.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.\nSource found with mosaic at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {abs(df_sorted.iloc[0]['t_start'])}, duration {dur} s.")
+        utils.post_slack(os.path.join(workdir, "map_mosaic.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
+        utils.post_slack(os.path.join(workdir, "mosaic.csv"), f"Tables for mosaic. Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
+        utils.post_slack(os.path.join(workdir, "pc_time.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
 
     imaging_csv = os.path.join(workdir, "imaging.csv")
     if os.stat(imaging_csv).st_size != 0:
-        helpers.sort_csv(workdir, "imaging.csv")
+        utils.sort_csv(workdir, "imaging.csv")
         df_sorted = pd.read_csv(imaging_csv).sort_values(by="SNR", ascending=False)
         ra_max = df_sorted.iloc[0]["RA"]
         dec_max = df_sorted.iloc[0]["Dec"]
@@ -317,14 +316,14 @@ def read_results(event, t0, workdir):
         map_imaging(event, ra_max, dec_max, time_bins, energybins, t0, workdir)
         sign = "+" if df_sorted.iloc[0]["dt"] > 0 else "-"
         if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-            helpers.post_telegram(os.path.join(workdir, "lc_imaging.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.\nSource found with imaging at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {df_sorted.iloc[0]['dt']}, duration {df_sorted.iloc[0]['duration']} s.")
+            utils.post_telegram(os.path.join(workdir, "lc_imaging.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.\nSource found with imaging at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {df_sorted.iloc[0]['dt']}, duration {df_sorted.iloc[0]['duration']} s.")
             time.sleep(5)
-            helpers.post_telegram(os.path.join(workdir, "map_imaging.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
-            helpers.post_telegram(os.path.join(workdir, "imaging.csv"), f"Tables for imaging. Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
+            utils.post_telegram(os.path.join(workdir, "map_imaging.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
+            utils.post_telegram(os.path.join(workdir, "imaging.csv"), f"Tables for imaging. Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
         time.sleep(5)
-        helpers.post_slack(os.path.join(workdir, "lc_imaging.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.\nSource found with imaging at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {abs(df_sorted.iloc[0]['dt'])}, duration {df_sorted.iloc[0]['duration']} s.")
-        helpers.post_slack(os.path.join(workdir, "map_imaging.png"), f"Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
-        helpers.post_slack(os.path.join(workdir, "imaging.csv"), f"Tables for imaging. Trigger ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}.")
+        utils.post_slack(os.path.join(workdir, "lc_imaging.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.\nSource found with imaging at: RA={ra_max}, Dec={dec_max}, SNR={df_sorted.iloc[0]['SNR']}, at t0 {sign} {abs(df_sorted.iloc[0]['dt'])}, duration {df_sorted.iloc[0]['duration']} s.")
+        utils.post_slack(os.path.join(workdir, "map_imaging.png"), f"Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
+        utils.post_slack(os.path.join(workdir, "imaging.csv"), f"Tables for imaging. Trigger ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}.")
 
 
 def dpi(event, t0, workdir):
@@ -395,7 +394,7 @@ def run_analysis(event, t0, workdir, tmin, tmax, pipe, local, energybins=[15.0, 
         plt.savefig(os.path.join(workdir, "attitude.png"), dpi=500)
         plt.close()
         dpi(event, t0, workdir)
-        plot_fermi_bat_diagnostic(event, t0, workdir)
+        plot_ext_bat_diagnostic(event, t0, workdir)
         try:
             logging.info(f"attitude interval: {att_time.min() - t0}, {att_time.max() - t0}")
             logging.info(f"event interval: {data_time.min() - t0}, {data_time.max() - t0}")
@@ -420,18 +419,18 @@ def run_analysis(event, t0, workdir, tmin, tmax, pipe, local, energybins=[15.0, 
                     failure = True
             else:
                 logging.error("pipe must be either imaging or mosaic")
-            max_snr, im, max_snr_imaging, mos, max_snr_mosaic = helpers.read_snr(workdir)
+            max_snr, im, max_snr_imaging, mos, max_snr_mosaic = utils.read_snr(workdir)
             if max_snr is not None and max_snr >= 6:
                 if im:
-                    helpers.sort_csv(workdir, "imaging.csv")
-                    helpers.post_slack(os.path.join(workdir, "imaging.csv"), f"Imaging found results with max SNR {max_snr_imaging} in the time interval [{tmin}, {tmax}]")
+                    utils.sort_csv(workdir, "imaging.csv")
+                    utils.post_slack(os.path.join(workdir, "imaging.csv"), f"Imaging found results with max SNR {max_snr_imaging} in the time interval [{tmin}, {tmax}]")
                     if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-                        helpers.post_telegram(os.path.join(workdir, "imaging.csv"), f"Imaging found results with max SNR {max_snr_imaging} in the time interval [{tmin}, {tmax}]")
+                        utils.post_telegram(os.path.join(workdir, "imaging.csv"), f"Imaging found results with max SNR {max_snr_imaging} in the time interval [{tmin}, {tmax}]")
                 if mos:
-                    helpers.sort_csv(workdir, "mosaic.csv")
-                    helpers.post_slack(os.path.join(workdir, "mosaic.csv"), f"Mosaic found results with max SNR {max_snr_mosaic} in the time interval [{tmin}, {tmax}]")
+                    utils.sort_csv(workdir, "mosaic.csv")
+                    utils.post_slack(os.path.join(workdir, "mosaic.csv"), f"Mosaic found results with max SNR {max_snr_mosaic} in the time interval [{tmin}, {tmax}]")
                     if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-                        helpers.post_telegram(os.path.join(workdir, "mosaic.csv"), f"Mosaic found results with max SNR {max_snr_mosaic} in the time interval [{tmin}, {tmax}]")
+                        utils.post_telegram(os.path.join(workdir, "mosaic.csv"), f"Mosaic found results with max SNR {max_snr_mosaic} in the time interval [{tmin}, {tmax}]")
             read_results(event, t0, workdir)
             logging.info(f"Failure: {failure}")
             return failure
@@ -457,37 +456,37 @@ def run_analysis(event, t0, workdir, tmin, tmax, pipe, local, energybins=[15.0, 
                     logging.info("time_seed.csv is empty")
             else:
                 logging.info("time_seed.csv not found in workdir")
-            max_snr, im, max_snr_imaging, mos, max_snr_mosaic = helpers.read_snr(workdir)
+            max_snr, im, max_snr_imaging, mos, max_snr_mosaic = utils.read_snr(workdir)
             if max_snr is not None and max_snr >= 6 and im:
-                helpers.sort_csv(workdir, "imaging.csv")
-                helpers.post_slack(os.path.join(workdir, "imaging.csv"), f"Imaging with NITRATES seeds found results with max SNR {max_snr_imaging}, trig ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
+                utils.sort_csv(workdir, "imaging.csv")
+                utils.post_slack(os.path.join(workdir, "imaging.csv"), f"Imaging with NITRATES seeds found results with max SNR {max_snr_imaging}, trig ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
                 if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-                    helpers.post_telegram(os.path.join(workdir, "imaging.csv"), f"Imaging with NITRATES seeds found results with max SNR {max_snr_imaging}, trig ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
-            seed_max, dur_max, seeds = helpers.cust_seeds(t0, workdir)
+                    utils.post_telegram(os.path.join(workdir, "imaging.csv"), f"Imaging with NITRATES seeds found results with max SNR {max_snr_imaging}, trig ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
+            seed_max, dur_max, seeds = utils.cust_seeds(t0, workdir)
             if seed_max is not None:
                 logging.info(f"Found seed with custom search at {round(seed_max, 3)} s with duration {dur_max} ms")
                 try:
-                    filename = helpers.resolve_event_file(workdir)
+                    filename = utils.resolve_event_file(workdir)
                     if filename is None:
                         logging.error("No event file found for refined custom seed search; skipping.")
                     else:
                         if not filename.endswith("filter_evdata.fits"):
                             logging.info(f"Using fallback event file for refined custom seeds: {filename}")
-                        event_times, gti_start, gti_stop = helpers.load_event_times(filename)
-                        bin_centers, counts = helpers.bin_light_curve(event_times, 0.016, gti_start, gti_stop, t0)
-                        best_params, samples, norm_val = helpers.fit_background_linear(bin_centers, counts, t0)
-                        model_bkg = helpers.model(bin_centers, t0, best_params, norm_val)
+                        event_times, gti_start, gti_stop = utils.load_event_times(filename)
+                        bin_centers, counts = utils.bin_light_curve(event_times, 0.016, gti_start, gti_stop, t0)
+                        best_params, samples, norm_val = utils.fit_background_linear(bin_centers, counts, t0)
+                        model_bkg = utils.model(bin_centers, t0, best_params, norm_val)
                         counts_sub = counts - model_bkg
                         slew_times = att_time[slew_idx] - t0
                         for item in seeds:
-                            max_snr = helpers.read_snr(workdir)[0]
+                            max_snr = utils.read_snr(workdir)[0]
                             if max_snr is not None and max_snr >= 20:
                                 logging.info(f"Maximum SNR found: {max_snr}, skipping refined seed search")
                                 break
                             if item[0] is not None and -20 < item[0] < 20:
                                 t_cent = item[0]
                                 dt = item[1] / 1000.0
-                                t_cent, dt = helpers.refined_seed_search(bin_centers, counts_sub, t_cent, dt, n_trials=10000)
+                                t_cent, dt = utils.refined_seed_search(bin_centers, counts_sub, t_cent, dt, n_trials=10000)
                                 dt = min(dt, 10)
                                 logging.info(f"Refined seed found at {round(t_cent, 3)} s with duration {round(dt, 3)} s")
                                 interval_start = t_cent - dt / 2
@@ -512,19 +511,19 @@ def run_analysis(event, t0, workdir, tmin, tmax, pipe, local, energybins=[15.0, 
                                     except Exception:
                                         logging.error(f"error in mosaic: {traceback.format_exc()}")
                                         failure = True
-                    max_snr, im, max_snr_imaging, mos, max_snr_mosaic = helpers.read_snr(workdir)
+                    max_snr, im, max_snr_imaging, mos, max_snr_mosaic = utils.read_snr(workdir)
                     logging.info(f"Maximum SNR after custom seeds search: {max_snr}")
                     if max_snr is not None and max_snr >= 6:
                         if im:
-                            helpers.sort_csv(workdir, "imaging.csv")
-                            helpers.post_slack(os.path.join(workdir, "imaging.csv"), f"Imaging with custom seeds search found results with max SNR {max_snr_imaging}, trig ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
+                            utils.sort_csv(workdir, "imaging.csv")
+                            utils.post_slack(os.path.join(workdir, "imaging.csv"), f"Imaging with custom seeds search found results with max SNR {max_snr_imaging}, trig ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
                             if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-                                helpers.post_telegram(os.path.join(workdir, "imaging.csv"), f"Imaging with custom seeds search found results with max SNR {max_snr_imaging}, trig ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
+                                utils.post_telegram(os.path.join(workdir, "imaging.csv"), f"Imaging with custom seeds search found results with max SNR {max_snr_imaging}, trig ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
                         if mos:
-                            helpers.sort_csv(workdir, "mosaic.csv")
-                            helpers.post_slack(os.path.join(workdir, "mosaic.csv"), f"Mosaic with custom seeds search found results with max SNR {max_snr_mosaic}, trig ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
+                            utils.sort_csv(workdir, "mosaic.csv")
+                            utils.post_slack(os.path.join(workdir, "mosaic.csv"), f"Mosaic with custom seeds search found results with max SNR {max_snr_mosaic}, trig ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
                             if utils.TRIG_INSTR and "IGWN" in utils.TRIG_INSTR:
-                                helpers.post_telegram(os.path.join(workdir, "mosaic.csv"), f"Mosaic with custom seeds search found results with max SNR {max_snr_mosaic}, trig ID {helpers.TRIGRID}, external trigger {helpers.EXT_TRIG}")
+                                utils.post_telegram(os.path.join(workdir, "mosaic.csv"), f"Mosaic with custom seeds search found results with max SNR {max_snr_mosaic}, trig ID {utils.TRIGRID}, external trigger {utils.EXT_TRIG}")
                     failure = False
                 except Exception:
                     logging.error(f"error: {traceback.format_exc()}")

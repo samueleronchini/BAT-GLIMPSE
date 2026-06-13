@@ -106,14 +106,33 @@ def download_fermi_map(trigger_time, workdir):
         logging.error(f"Error downloading Fermi map: {exc}")
         traceback.print_exc()
 
+def get_superevent_from_gps(time, window=1):
+
+    gps = Time(time, format="isot", scale="utc").gps
+
+    superevents = list(
+        GRACE_DB.superevents(f"t_0: {gps-window} .. {gps+window}")
+    )
+
+    if not superevents:
+        return None
+
+    return min(
+        superevents,
+        key=lambda se: abs(se["t_0"] - gps)
+    )["superevent_id"]
 
 def search_ext_maps(trigger_time, workdir):
     logging.info("searching map")
-    logging.info("searching Fermi map")
-    download_fermi_map(trigger_time, workdir)
+    
+    if TRIG_INSTR and "IGWN" not in TRIG_INSTR:
+        logging.info("searching Fermi map")
+        download_fermi_map(trigger_time, workdir)
 
     if TRIG_INSTR and "IGWN" in TRIG_INSTR:
-        gw_id = next((x for x in EXT_TRIG if x.startswith("S")), next((x for x in EXT_TRIG if x.startswith("G")), None))
+        logging.info("searching IGWN map")
+        # gw_id = next((x for x in EXT_TRIG if x.startswith("S")), next((x for x in EXT_TRIG if x.startswith("G")), None))
+        gw_id = get_superevent_from_gps(trigger_time, window=1)
         x = GRACE_DB.files(gw_id).json()
         fits_files = [(name, url) for name, url in x.items() if "Bilby" in name and "fits" in name and "," not in name]
         if not fits_files:
@@ -312,15 +331,21 @@ def find_seeds(bin_centers, counts, model_bkg, counts_sub, bin_size_ms, t0, work
     mask = (x < -5) | (x > 20)
     bkg_std = np.std(counts_sub[mask]) if np.any(mask) else np.std(counts_sub)
     with np.errstate(divide="ignore", invalid="ignore"):
-        # snr = counts_sub / bkg_std
         snr = counts_sub / (model_bkg + counts)**0.5
         snr[snr < 0] = 0
-    snr_max = snr.max()
+
+    if snr.size == 0 or np.all(np.isnan(snr)):
+        logging.error(f"Empty or NaN SNR array for bin size {bin_size_ms} ms; skipping plot")
+        plt.close()
+        return None, None
+
+    snr_max = np.nanmax(snr)
     cmap = plt.get_cmap("GnBu")
-    norm = plt.Normalize(0, snr_max)
+    norm = plt.Normalize(0, snr_max if np.isfinite(snr_max) and snr_max > 0 else 1.0)
     for i, xc in enumerate(x):
-        color = cmap(norm(np.clip(snr[i], 0, snr_max)))
-        if snr[i] > 3.5:
+        val = 0 if np.isnan(snr[i]) else snr[i]
+        color = cmap(norm(np.clip(val, 0, snr_max)))
+        if val > 3.5:
             plt.axvspan(xc - bin_size_ms / 2000.0, xc + bin_size_ms / 2000.0, color=color, alpha=0.3, zorder=1)
     handles, labels = plt.gca().get_legend_handles_labels()
     if "SNR > 3.5" not in labels:
@@ -333,7 +358,14 @@ def find_seeds(bin_centers, counts, model_bkg, counts_sub, bin_size_ms, t0, work
     plt.xlabel("Time [s] (t - t0)")
     plt.ylabel("Counts per bin")
     plt.axhline(0, color="gray", linestyle=":", linewidth=1)
-    max_snr_idx = np.where(snr == snr_max)[0][0]
+
+    max_idx_candidates = np.where(np.isclose(snr, snr_max, atol=1e-12))[0]
+    if max_idx_candidates.size == 0:
+        logging.error(f"No index found matching snr_max ({snr_max}) for bin size {bin_size_ms} ms")
+        plt.close()
+        return None, None
+    max_snr_idx = int(max_idx_candidates[0])
+
     t_star = bin_centers[max_snr_idx] - t0
     window = min(45, 30 * bin_size_ms / 1000.0)
     plt.xlim(t_star - window, t_star + window)
@@ -417,7 +449,8 @@ def cust_seeds(t0, workdir):
                     seeds.append([time_bin, bin_size_ms, snr_bin])
                 if snr_bin > snr_max:
                     seed_max, dur_max, snr_max = time_bin, bin_size_ms, snr_bin
-        except Exception:
+        except Exception as e:
+            logging.exception(f"Error in custom seed search for bin size {bin_size_ms} ms: {e}")
             continue
     if seed_max is None:
         logging.info("No seeds found in the custom search")

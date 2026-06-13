@@ -38,11 +38,11 @@ def map_ext(fit_file, workdir, ax_globe, add_legend=True):
         ax_globe.add_artist(red_legend)
 
 
-def _find_fermi_map_file(workdir):
+def _find_ext_map_file(workdir):
     candidates = [
         fname
         for fname in os.listdir(workdir)
-        if ("ext_loc_fermi" in fname or "glg_healpix" in fname)
+        if ("ext_loc" in fname or "glg_healpix" in fname)
         and fname.endswith((".fit", ".fits", ".fit.gz", ".fits.gz"))
     ]
     if not candidates:
@@ -60,7 +60,7 @@ def _load_probability_map(workdir, fit_file):
     return probability / total
 
 
-def _fermi_zoom_region(probability):
+def _ext_zoom_region(probability):
     nside = hp.npix2nside(probability.size)
     peak_pix = int(np.nanargmax(probability))
     peak_ra, peak_dec = hp.pix2ang(nside, peak_pix, nest=True, lonlat=True)
@@ -81,7 +81,7 @@ def _fermi_zoom_region(probability):
     return float(peak_ra), float(peak_dec), radius
 
 
-def _sample_fermi_positions(probability, sample_count, seed):
+def _sample_ext_positions(probability, sample_count, seed):
     nside = hp.npix2nside(probability.size)
     rng = np.random.default_rng(seed)
     pixels = rng.choice(probability.size, size=sample_count, replace=True, p=probability)
@@ -212,7 +212,7 @@ def _plot_weighted_partial_coding_lightcurve(workdir, t0, sample_sources, att_ti
 
     plt.tight_layout()
 
-    save_path = os.path.join(workdir, "lc_fermi_weighted_pc.png")
+    save_path = os.path.join(workdir, "lc_ext_weighted_pc.png")
     plt.savefig(save_path, dpi=300)
     plt.close()
     logging.info("Saved weighted partial-coding light curve to %s", save_path)
@@ -279,16 +279,16 @@ def _plot_bat_fov_contours(
         ax_globe.clabel(contour_globe, inline=True, fmt=label_fmt, fontsize=label_fontsize)
 
 
-def plot_fermi_bat_diagnostic(event, t0, workdir, energybins=[15, 350] * u.keV, sample_count=FERMI_PC_SAMPLE_COUNT):
+def plot_ext_bat_diagnostic(event, t0, workdir, energybins=[15, 350] * u.keV, sample_count=FERMI_PC_SAMPLE_COUNT):
     try:
-        fit_file = _find_fermi_map_file(workdir)
+        fit_file = _find_ext_map_file(workdir)
         if fit_file is None:
-            logging.warning("No Fermi localization map found in %s; skipping pre-run BAT/Fermi diagnostic.", workdir)
+            logging.warning("No external localization map found in %s; skipping pre-run BAT/External diagnostic.", workdir)
             return None
 
         probability = _load_probability_map(workdir, fit_file)
-        center_ra, center_dec, zoom_radius = _fermi_zoom_region(probability)
-        sample_ra, sample_dec = _sample_fermi_positions(probability, sample_count, seed=int(abs(float(t0))) % (2**32))
+        center_ra, center_dec, zoom_radius = _ext_zoom_region(probability)
+        sample_ra, sample_dec = _sample_ext_positions(probability, sample_count, seed=int(abs(float(t0))) % (2**32))
         sample_sources = _build_sample_sources(sample_ra, sample_dec)
 
         att_time, att_ra, att_dec, att_roll, settled_mask = _attitude_arrays(event)
@@ -462,7 +462,7 @@ def plot_fermi_bat_diagnostic(event, t0, workdir, energybins=[15, 350] * u.keV, 
                 ax_stats.set_ylabel("Partial coding")
                 ax_stats.legend(loc="best")
 
-        save_path = os.path.join(workdir, "map_fermi_bat_pc.png")
+        save_path = os.path.join(workdir, "map_ext_bat_pc.png")
         plt.savefig(save_path, bbox_inches="tight", dpi=300)
         plt.close()
 
@@ -487,7 +487,7 @@ def plot_fermi_bat_diagnostic(event, t0, workdir, energybins=[15, 350] * u.keV, 
         )
         return save_path
     except Exception:
-        logging.error("Error in plot_fermi_bat_diagnostic", exc_info=True)
+        logging.error("Error in plot_ext_bat_diagnostic", exc_info=True)
         return None
 
 
