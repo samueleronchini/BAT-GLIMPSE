@@ -215,3 +215,4 @@ Samuele Ronchini - [Personal Website](https://samueleronchini.github.io) - samue
   * [https://doi.org/10.5281/zenodo.7916508](https://doi.org/10.5281/zenodo.7916508)
   * [Parsotan et. al. 2023](https://doi.org/10.3847/1538-4357/ace325)
   * [Parsotan et. al. 2025](https://doi.org/10.3847/1538-4357/ade240)
+* The BAT-GLIMPSE logo makes use of the original [Swift model](https://commons.wikimedia.org/wiki/File:Swift_Observatory_spacecraft_model.png), edited with OpenAI tools.
