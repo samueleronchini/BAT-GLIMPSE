@@ -2,7 +2,7 @@
 
 
 <p align="center">
-  <h3 align="center">BAT-GLIMPSE </h3>
+  <h1 align="center">BAT-GLIMPSE </h1>
 
   <p align="center">
     Gamma-ray Localization using Imaging and Mosaic Techniques for Pointing and Slew Epochs 
