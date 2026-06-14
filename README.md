@@ -77,7 +77,7 @@ python -m batglimpse --workdir </path/to/workdir> --trigtime <trigtime>
 - `--mosaic_nprocs`: processes used while mosaicing.
 - `--trig_instr`: Name of the triggering instrument
 
-For `--trig_instr` use `IGWN` when it's a GW. This allows to create the preliminary maps with the partial coding distribution. Otherwise,by default the code searches for a Fermi-GBM map.
+For `--trig_instr` use `IGWN` when it's a GW. This allows to create the preliminary maps with the partial coding distribution. Otherwise, by default the code searches for a Fermi-GBM map.
 
 ### External Map Search
 
