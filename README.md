@@ -1,8 +1,19 @@
 # BAT-GLIMPSE
 
+## Requirements
+
+HEASoft needs to be installed. We recommend to install it via Conda as described [here](https://www.anaconda.com/products/distribution), doing
+```bash
+conda create -n henv heasoft \
+  -c https://heasarc.gsfc.nasa.gov/FTP/software/conda/ \
+  -c conda-forge
+
+```
+In the same environment, install BAT-GLIMPSE and NITRATES as described in the next two steps. CALDB environment variables need to be defined as described [here](https://heasarc.gsfc.nasa.gov/docs/heasarc/caldb/caldb_remote_access.html)
+
 ## Install
 
-The package can be installed via pip, with Python 3.9 or greater. Installation via Anaconda is recommended.
+The package can be installed via pip, with Python 3.10 or greater.
 
 ```bash
 pip install bat-glimpse
@@ -36,7 +47,7 @@ bat-glimpse --workdir </path/to/workdir> --trigtime <trigtime>
 You can also run the package module directly:
 
 ```bash
-python -m batglimpse --workdir </path/to/workdir>> --trigtime <trigtime>
+python -m batglimpse --workdir </path/to/workdir> --trigtime <trigtime>
 ```
 
 ## Main options

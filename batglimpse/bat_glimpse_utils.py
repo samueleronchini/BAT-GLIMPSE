@@ -125,9 +125,10 @@ def get_superevent_from_gps(time, window=1):
 def search_ext_maps(trigger_time, workdir):
     logging.info("searching map")
     
-    if TRIG_INSTR and "IGWN" not in TRIG_INSTR:
-        logging.info("searching Fermi map")
-        download_fermi_map(trigger_time, workdir)
+    # if TRIG_INSTR == None:
+    # The search of Fermi map is done always
+    logging.info("searching Fermi map") 
+    download_fermi_map(trigger_time, workdir)
 
     if TRIG_INSTR and "IGWN" in TRIG_INSTR:
         logging.info("searching IGWN map")
