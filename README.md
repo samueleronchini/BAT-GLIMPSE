@@ -2,17 +2,16 @@
 
 
 <p align="center">
-  <a href="https://github.com/parsotat/BatAnalysis">
-    <img src="./logo/logo.png" alt="Logo" width="300">  
-    </a>
-
   <h3 align="center">BAT-GLIMPSE </h3>
 
   <p align="center">
     Gamma-ray Localization using Imaging and Mosaic Techniques for Pointing and Slew Epochs 
-
-  </p>
 </p>
+<p align="center">
+<a href="https://github.com/parsotat/BatAnalysis">
+<img src="./logo/logo_.png" alt="Logo" width="450">  
+</a>
+
 
 
 
