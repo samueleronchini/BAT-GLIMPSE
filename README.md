@@ -201,3 +201,17 @@ python run_bat_glimpse.py \
   --skyview_nprocs 8 \
   --mosaic_nprocs 8
 ```
+
+## Contact
+
+Samuele Ronchini - [Personal Website](https://samueleronchini.github.io) - samuele.ronchini@gssi.it
+
+<!-- ACKNOWLEDGEMENTS -->
+## Acknowledgements
+
+* If you make use of BAT-GLIMPSE, please cite the following papers and software:
+  * Ronchini et al., in prep.
+  * [https://doi.org/10.5281/zenodo.20689240](https://doi.org/10.5281/zenodo.20689240)
+  * [https://doi.org/10.5281/zenodo.7916508](https://doi.org/10.5281/zenodo.7916508)
+  * [Parsotan et. al. 2023](https://doi.org/10.3847/1538-4357/ace325)
+  * [Parsotan et. al. 2025](https://doi.org/10.3847/1538-4357/ade240)
