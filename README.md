@@ -8,8 +8,7 @@
     Gamma-ray Localization using Imaging and Mosaic Techniques for Pointing and Slew Epochs 
 </p>
 <p align="center">
-<a href="https://github.com/parsotat/BatAnalysis">
-<img src="./logo/logo_.png" alt="Logo" width="450">  
+<img src="https://raw.githubusercontent.com/samueleronchini/BAT-GLIMPSE/main/logo/logo_.png" alt="Logo" width="450">  
 </a>
 
 
