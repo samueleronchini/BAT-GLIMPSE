@@ -210,7 +210,7 @@ Samuele Ronchini - [Personal Website](https://samueleronchini.github.io) - samue
 ## Acknowledgements
 
 * If you make use of BAT-GLIMPSE, please cite the following papers and software:
-  * Ronchini et al., in prep.
+  * [Ronchini et al. 2026](https://arxiv.org/html/2607.15130v1)
   * [https://doi.org/10.5281/zenodo.20689240](https://doi.org/10.5281/zenodo.20689240)
   * [https://doi.org/10.5281/zenodo.7916508](https://doi.org/10.5281/zenodo.7916508)
   * [Parsotan et. al. 2023](https://doi.org/10.3847/1538-4357/ace325)
