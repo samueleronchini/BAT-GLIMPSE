@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use BAT-GLIMPSE, please cite the software and the associated paper."
+title: "BAT-GLIMPSE"
+type: software
+version: 0.1.7
+date-released: "2026-07-16"
+abstract: >-
+  BAT-GLIMPSE is an open-source Swift/BAT localization pipeline for transient gamma-ray
+  sources. It combines coded-mask imaging and mosaic techniques to recover arcminute-scale
+  positions during both normal pointings and spacecraft slews, enabling rapid follow-up of
+  short transients and multi-messenger counterparts.
+authors:
+  - family-names: Ronchini
+    given-names: Samuele
+    affiliation: "Gran Sasso Science Institute"
+url: "https://github.com/samueleronchini/BAT-GLIMPSE"
+repository-code: "https://github.com/samueleronchini/BAT-GLIMPSE"
+doi: "10.5281/zenodo.20692675"
+license: "MIT"
+references:
+  - type: article
+    authors:
+      - family-names: Ronchini
+        given-names: Samuele
+    title: "Swift gives a new BAT-GLIMPSE: Gamma-ray Localization using Imaging and Mosaic techniques for Pointing and Slew Epochs"
+    journal: "arXiv"
+    year: 2026
+    doi: "10.48550/arXiv.2607.15130"
