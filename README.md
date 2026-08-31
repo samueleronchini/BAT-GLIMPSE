@@ -11,8 +11,7 @@
 <img src="https://raw.githubusercontent.com/samueleronchini/BAT-GLIMPSE/main/logo/logo_.png" alt="Logo" width="450">  
 </a>
 
-
-
+BAT-GLIMPSE is a rapid Swift/BAT localization pipeline for short gamma-ray transients. It combines targeted imaging and mosaic-based searches to identify and rank candidate sources from burst data, enabling fast sky localization and follow-up prioritization.
 
 ## 1. Installation
 
