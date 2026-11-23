@@ -66,6 +66,9 @@ pip install bat-glimpse
 ```
 CALDB environment variables should be already loaded.
 
+The mosaic flux upper-limit tutorial requires BAT-GLIMPSE 0.1.9 or later.
+After upgrading the package, restart the notebook kernel.
+
 ## 2. How to run
 
 ```bash

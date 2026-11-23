@@ -22,19 +22,22 @@ FERMI_PC_LC_BIN_SIZE = 0.256
 FERMI_PC_LC_WINDOW = (-5.0, 15.0)
 
 
-def map_ext(fit_file, workdir, ax_globe, add_legend=True):
+def map_ext(fit_file, workdir, ax_globe, add_legend=True, contours_only=False):
     skymap, _ = ligo.skymap.io.fits.read_sky_map(os.path.join(workdir, fit_file), nest=True, distances=False)
     white_to_blue = LinearSegmentedColormap.from_list("whiteblue", ["white", "orange"])
-    ax_globe.imshow_hpx((skymap.copy(), "ICRS"), cmap=white_to_blue, alpha=1.0, nested=True, zorder=0)
+    if not contours_only:
+        ax_globe.imshow_hpx((skymap.copy(), "ICRS"), cmap=white_to_blue, alpha=1.0, nested=True, zorder=0)
     cls = 100 * ligo.skymap.postprocess.util.find_greedy_credible_levels(skymap)
-    ax_globe.contour_hpx((cls, "ICRS"), nested=True, colors="black", levels=(50, 90), zorder=0, linestyles=["dashed", "solid"], linewidths=0.7)
+    ax_globe.contour_hpx((cls, "ICRS"), nested=True, colors="black", levels=(50, 90), zorder=10 if contours_only else 0, linestyles=["dashed", "solid"], linewidths=0.7)
     if add_legend:
         loc_line = [
             Line2D([0], [0], color="red", linestyle="dotted", linewidth=2, label="External localization", alpha=0.0),
             Line2D([0], [0], color="black", linestyle="solid", linewidth=2, label="90% C.L."),
             Line2D([0], [0], color="black", linestyle="dashed", linewidth=2, label="50% C.L."),
         ]
-        red_legend = ax_globe.legend(handles=loc_line, loc="lower right", frameon=True, bbox_to_anchor=(1.05, -0.18), borderaxespad=0.5)
+        loc = "lower left" if contours_only else "lower right"
+        anchor = (1.05, -0.55) if contours_only else (1.05, -0.18)
+        red_legend = ax_globe.legend(handles=loc_line, loc=loc, frameon=True, bbox_to_anchor=anchor, borderaxespad=0.5)
         ax_globe.add_artist(red_legend)
 
 
