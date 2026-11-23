@@ -10,13 +10,21 @@ import batanalysis as ba
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from matplotlib.lines import Line2D
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import Table, unique, vstack
 from astropy.time import Time, TimeDelta
 from swifttools.swift_too import Data, GUANO, ObsQuery
+import healpy as hp
+import ligo.skymap.plot
 
 from . import bat_glimpse_utils as utils
-from .bat_glimpse_plotting import map_imaging, map_mosaic, pc_time, plot_ext_bat_diagnostic, plot_lc, plot_snr
+from .bat_glimpse_plotting import (
+    _ext_zoom_region, _find_ext_map_file, _load_probability_map, _sample_ext_positions,
+    map_ext, map_imaging, map_mosaic, pc_time, plot_ext_bat_diagnostic, plot_lc, plot_snr,
+)
 
 import subprocess
 import sys
@@ -24,6 +32,1047 @@ import sys
 GUANO_DATA_MAX_WAIT_SECONDS = int(os.getenv("BAT_GLIMPSE_GUANO_MAX_WAIT_SECONDS", "10800"))
 GUANO_RETRY_SLEEP_SECONDS = int(os.getenv("BAT_GLIMPSE_GUANO_RETRY_SLEEP_SECONDS", "60"))
 GUANO_MAX_RETRIES = int(os.getenv("BAT_GLIMPSE_GUANO_MAX_RETRIES", "4"))
+UL_HEALPIX_NESTED = False
+
+
+def _is_multiprocessing_bootstrap_error(exc):
+    msg = str(exc)
+    return (
+        "start a new process before the current process has finished its bootstrapping phase" in msg
+        or "_check_not_importing_main" in msg
+    )
+
+
+def _safe_create_event_skyview(event, *, timebins, energybins, is_relative, parse_images, T0, nprocs, input_dict):
+    try:
+        return ba.parallel.create_event_skyview(
+            event,
+            timebins=timebins,
+            energybins=energybins,
+            is_relative=is_relative,
+            parse_images=parse_images,
+            T0=T0,
+            nprocs=nprocs,
+            input_dict=input_dict,
+        )
+    except RuntimeError as exc:
+        if int(nprocs) <= 1 or not _is_multiprocessing_bootstrap_error(exc):
+            raise
+        logging.warning(
+            "Parallel skyview creation failed due to multiprocessing bootstrap context; retrying with nprocs=1"
+        )
+        return ba.parallel.create_event_skyview(
+            event,
+            timebins=timebins,
+            energybins=energybins,
+            is_relative=is_relative,
+            parse_images=parse_images,
+            T0=T0,
+            nprocs=1,
+            input_dict=input_dict,
+        )
+
+
+def _safe_mosaic_skyview(skyviews, *, healpix_nside, nprocs):
+    try:
+        return ba.parallel.mosaic_skyview(
+            skyviews,
+            healpix_nside=healpix_nside,
+            nprocs=nprocs,
+        )
+    except RuntimeError as exc:
+        if int(nprocs) <= 1 or not _is_multiprocessing_bootstrap_error(exc):
+            raise
+        logging.warning(
+            "Parallel mosaic creation failed due to multiprocessing bootstrap context; retrying with nprocs=1"
+        )
+        return ba.parallel.mosaic_skyview(
+            skyviews,
+            healpix_nside=healpix_nside,
+            nprocs=1,
+        )
+
+
+def _quantity_to_keV_values(values):
+    if hasattr(values, "to_value"):
+        return np.asarray(values.to_value(u.keV), dtype=float)
+    return np.asarray(values, dtype=float)
+
+
+def _quantity_to_float_values(values):
+    if hasattr(values, "value"):
+        return np.asarray(values.value, dtype=float)
+    return np.asarray(values, dtype=float)
+
+
+def _response_arrays_from_batdrm(drm):
+    e_lo = _quantity_to_keV_values(drm.input_ebins["E_MIN"])
+    e_hi = _quantity_to_keV_values(drm.input_ebins["E_MAX"])
+    response = drm.project("E_IN", "E_OUT")
+    resp = _quantity_to_float_values(response.contents)
+    return e_lo, e_hi, np.asarray(resp, dtype=float)
+
+
+def _response_arrays_from_ogip_rsp(drm_file):
+    with fits.open(drm_file) as hdul:
+        matrix_hdu = hdul["SPECRESP MATRIX"] if "SPECRESP MATRIX" in hdul else hdul[1]
+        matrix_data = matrix_hdu.data
+        e_lo = np.asarray(matrix_data["ENERG_LO"], dtype=float)
+        e_hi = np.asarray(matrix_data["ENERG_HI"], dtype=float)
+
+        if "EBOUNDS" in hdul:
+            n_output_bins = len(hdul["EBOUNDS"].data)
+        else:
+            first_matrix = np.atleast_1d(matrix_data["MATRIX"][0])
+            n_output_bins = int(first_matrix.size)
+
+        resp = np.zeros((len(matrix_data), n_output_bins), dtype=float)
+        f_chan_all = np.concatenate([np.atleast_1d(row).astype(int) for row in matrix_data["F_CHAN"]])
+        channel_offset = 0 if np.nanmin(f_chan_all) == 0 else 1
+
+        for row_idx, row in enumerate(matrix_data):
+            matrix_values = np.atleast_1d(row["MATRIX"]).astype(float)
+            f_chan = np.atleast_1d(row["F_CHAN"]).astype(int)
+            n_chan = np.atleast_1d(row["N_CHAN"]).astype(int)
+            cursor = 0
+            for first_chan, num_chan in zip(f_chan, n_chan):
+                if num_chan <= 0:
+                    continue
+                start = int(first_chan) - channel_offset
+                stop = min(start + int(num_chan), n_output_bins)
+                width = max(stop - start, 0)
+                if width > 0:
+                    resp[row_idx, start:stop] = matrix_values[cursor:cursor + width]
+                cursor += int(num_chan)
+
+    return e_lo, e_hi, resp
+
+
+def _default_bat_drm_file():
+    return Path(ba.__file__).parent.joinpath("data", "swiftbat_survey_full_157m.rsp")
+
+
+def _extract_drm_response_arrays(drm_source, allow_default_response=True):
+    if drm_source is not None and hasattr(drm_source, "input_ebins") and hasattr(drm_source, "project"):
+        return _response_arrays_from_batdrm(drm_source), "BatDRM object"
+
+    candidate_files = []
+    if drm_source is not None and isinstance(drm_source, (str, os.PathLike)):
+        candidate_files.append(Path(drm_source))
+    elif drm_source is not None:
+        for attr_name in ("drm_file", "rsp_file", "response_file"):
+            candidate = getattr(drm_source, attr_name, None)
+            if candidate is not None:
+                candidate_files.append(Path(candidate))
+        pha_file = getattr(drm_source, "pha_file", None)
+        if pha_file is not None:
+            try:
+                drm = ba.BatDRM.from_file(pha_file=pha_file)
+                return _response_arrays_from_batdrm(drm), f"PHA {pha_file}"
+            except Exception as exc:
+                logging.debug("Could not build DRM from PHA %s: %s", pha_file, exc)
+
+    if allow_default_response:
+        default_rsp = _default_bat_drm_file()
+        if default_rsp.exists():
+            candidate_files.append(default_rsp)
+
+    errors = []
+    for candidate_file in candidate_files:
+        if not candidate_file.exists():
+            errors.append(f"{candidate_file}: file does not exist")
+            continue
+        try:
+            return _response_arrays_from_ogip_rsp(candidate_file), str(candidate_file)
+        except Exception as exc:
+            errors.append(f"{candidate_file}: {exc}")
+        try:
+            drm = ba.BatDRM.from_file(drm_file=candidate_file)
+            return _response_arrays_from_batdrm(drm), str(candidate_file)
+        except Exception as exc:
+            errors.append(f"{candidate_file}: {exc}")
+
+    raise ValueError("; ".join(errors) if errors else "No DRM response source available")
+
+
+def _drm_energy_flux_and_count_rate(
+    drm_source,
+    e_low_keV=15.0,
+    e_high_keV=350.0,
+    alpha=-1.0,
+    beta=-2.3,
+    epeak_keV=230.0,
+    allow_default_response=True,
+):
+    kev_to_erg = 1.602176634e-9
+    (e_lo, e_hi, resp), drm_label = _extract_drm_response_arrays(
+        drm_source,
+        allow_default_response=allow_default_response,
+    )
+    e_mid = 0.5 * (e_lo + e_hi)
+    de = e_hi - e_lo
+    mask = (e_hi > e_low_keV) & (e_lo < e_high_keV)
+    if not np.any(mask):
+        raise ValueError("No DRM energy bins inside requested band")
+
+    resp = np.asarray(resp, dtype=float)
+    if resp.ndim == 3:
+        resp = np.sum(resp, axis=0)
+    if resp.ndim != 2:
+        raise ValueError(f"DRM response matrix must be 2D, got shape {resp.shape}")
+
+    area = resp.sum(axis=1)
+    if area.shape[0] != e_mid.shape[0]:
+        area = resp.sum(axis=0)
+    if area.shape[0] != e_mid.shape[0]:
+        raise ValueError(
+            f"DRM response shape {resp.shape} is incompatible with {e_mid.shape[0]} input energy bins"
+        )
+
+    area = area[mask]
+    e_m = e_mid[mask]
+    de_m = de[mask]
+    spec = _band_spectrum_shape(e_m, alpha=alpha, beta=beta, epeak_keV=epeak_keV)
+    count_rate = float(np.sum(spec * area * de_m))
+    energy_flux = float(np.sum(spec * e_m * kev_to_erg * de_m))
+    if count_rate <= 0:
+        raise ValueError("DRM-based count_rate integral is zero or negative")
+    return energy_flux, count_rate, drm_label
+
+
+def _band_spectrum_shape(
+    energy_keV,
+    alpha=-1.0,
+    beta=-2.3,
+    epeak_keV=300.0,
+    pivot_keV=100.0,
+):
+    E = np.asarray(energy_keV, dtype=float)
+
+    Ebreak = (alpha - beta) * epeak_keV / (2.0 + alpha)
+
+    low = (
+        (E / pivot_keV) ** alpha
+        * np.exp(-(2.0 + alpha) * E / epeak_keV)
+    )
+
+    A = (
+        ((alpha - beta) * epeak_keV / ((2.0 + alpha) * pivot_keV))
+        ** (alpha - beta)
+        * np.exp(beta - alpha)
+    )
+
+    high = A * (E / pivot_keV) ** beta
+
+    return np.where(E <= Ebreak, low, high)
+
+
+def _patch_pha_ra_dec_comments(pha_dir):
+    fixed = 0
+    for pha_path in sorted(Path(pha_dir).glob("*.pha")):
+        try:
+            updated = False
+            with fits.open(pha_path, mode="update") as hdul:
+                for hdu in hdul:
+                    hdr = hdu.header
+                    if "RA_OBJ" in hdr:
+                        ra_comment = str(hdr.comments["RA_OBJ"]).lower()
+                        if "deg" not in ra_comment:
+                            hdr.set("RA_OBJ", hdr["RA_OBJ"], "Right Ascension (deg)")
+                            updated = True
+                    if "DEC_OBJ" in hdr:
+                        dec_comment = str(hdr.comments["DEC_OBJ"]).lower()
+                        if "deg" not in dec_comment:
+                            hdr.set("DEC_OBJ", hdr["DEC_OBJ"], "Declination (deg)")
+                            updated = True
+                if updated:
+                    hdul.flush()
+                    fixed += 1
+        except Exception:
+            logging.debug("Unable to patch PHA header comments for %s", pha_path, exc_info=True)
+    return fixed
+
+
+def _as_spectrum_list(spectra):
+    if spectra is None:
+        return []
+    if isinstance(spectra, list):
+        return spectra
+    if isinstance(spectra, tuple):
+        return list(spectra)
+    return [spectra]
+
+
+def _spectrum_drm_source(spec):
+    drm = getattr(spec, "drm", None)
+    if drm is not None:
+        return drm
+    return spec
+
+
+def _drm_time_weights(event, time_bins, energybins, t0, valid_indices):
+    try:
+        lc = event.create_lightcurve(
+            timebins=time_bins,
+            energybins=energybins,
+            is_relative=True,
+            T0=t0,
+            recalc=True,
+        )
+        totcounts = np.asarray(lc.data["TOTCOUNTS"], dtype=float)
+        if totcounts.ndim > 1:
+            totcounts = np.sum(totcounts, axis=1)
+    except Exception:
+        logging.warning("Could not compute lightcurve weights for DRM sampling; using equal weights")
+        totcounts = np.ones(len(time_bins) - 1, dtype=float)
+
+    weights = np.zeros_like(totcounts, dtype=float)
+    for idx in valid_indices:
+        if 0 <= int(idx) < weights.size:
+            value = float(totcounts[int(idx)])
+            if np.isfinite(value) and value > 0:
+                weights[int(idx)] = value
+
+    if np.sum(weights) <= 0:
+        for idx in valid_indices:
+            if 0 <= int(idx) < weights.size:
+                weights[int(idx)] = 1.0
+
+    weight_sum = np.sum(weights)
+    if not np.isfinite(weight_sum) or weight_sum <= 0:
+        raise ValueError("No valid time weights available for DRM sampling")
+    return weights / weight_sum
+
+
+def _representative_fov_pixels(pcode_support, pcode_ref, bkg_map, nside, n_samples=20, seed=24681357):
+    pcode_support = np.asarray(pcode_support, dtype=bool)
+    pcode_ref = np.asarray(pcode_ref, dtype=float)
+    bkg_map = np.asarray(bkg_map, dtype=float)
+
+    candidate_mask = pcode_support & np.isfinite(bkg_map) & (bkg_map > 0)
+    if np.any(np.isfinite(pcode_ref)):
+        candidate_mask &= np.isfinite(pcode_ref) & (pcode_ref > 0.05)
+    candidate_pix = np.flatnonzero(candidate_mask)
+    if candidate_pix.size == 0:
+        candidate_pix = np.flatnonzero(pcode_support)
+    if candidate_pix.size == 0:
+        raise ValueError("No BAT FOV pixels available for representative DRM sampling")
+    if candidate_pix.size <= n_samples:
+        return candidate_pix
+
+    rng = np.random.default_rng(seed)
+    max_pool = 120000
+    if candidate_pix.size > max_pool:
+        pool = rng.choice(candidate_pix, size=max_pool, replace=False)
+        best_pix = candidate_pix[np.nanargmax(np.where(np.isfinite(pcode_ref[candidate_pix]), pcode_ref[candidate_pix], -np.inf))]
+        pool[0] = best_pix
+    else:
+        pool = candidate_pix
+
+    vec = np.asarray(hp.pix2vec(int(nside), pool, nest=UL_HEALPIX_NESTED), dtype=float).T
+    if np.any(np.isfinite(pcode_ref[pool])):
+        first_local = int(np.nanargmax(np.where(np.isfinite(pcode_ref[pool]), pcode_ref[pool], -np.inf)))
+    else:
+        first_local = 0
+
+    selected_local = [first_local]
+    min_dist = 1.0 - np.clip(vec @ vec[first_local], -1.0, 1.0)
+    while len(selected_local) < min(int(n_samples), pool.size):
+        next_local = int(np.nanargmax(min_dist))
+        selected_local.append(next_local)
+        dist = 1.0 - np.clip(vec @ vec[next_local], -1.0, 1.0)
+        min_dist = np.minimum(min_dist, dist)
+
+    return np.asarray(pool[selected_local], dtype=int)
+
+
+def _coords_from_hpx_pixels(pixels, nside, coordsys):
+    lon, lat = hp.pix2ang(
+        int(nside),
+        np.asarray(pixels, dtype=int),
+        nest=UL_HEALPIX_NESTED,
+        lonlat=True,
+    )
+    coordsys = _normalize_hpx_coordsys(coordsys)
+    if str(coordsys).startswith("gal"):
+        return SkyCoord(l=lon * u.deg, b=lat * u.deg, frame="galactic").icrs
+    return SkyCoord(ra=lon * u.deg, dec=lat * u.deg, frame="icrs")
+
+
+def _tangent_plane_xy(coords, center):
+    dx, dy = center.spherical_offsets_to(coords)
+    return np.column_stack([dx.to_value(u.deg), dy.to_value(u.deg)])
+
+
+def _build_drm_k_pixel_interpolator(sample_ra_deg, sample_dec_deg, sample_k_values):
+    sample_k_values = np.asarray(sample_k_values, dtype=float)
+    finite = np.isfinite(sample_k_values) & (sample_k_values > 0)
+    if np.sum(finite) < 3:
+        raise ValueError("At least three finite DRM K samples are required for 2D interpolation")
+
+    sample_coords = SkyCoord(
+        ra=np.asarray(sample_ra_deg, dtype=float)[finite] * u.deg,
+        dec=np.asarray(sample_dec_deg, dtype=float)[finite] * u.deg,
+        frame="icrs",
+    )
+    sample_k_values = sample_k_values[finite]
+    center_vec = np.mean(sample_coords.cartesian.xyz.value, axis=1)
+    center_norm = np.linalg.norm(center_vec)
+    if not np.isfinite(center_norm) or center_norm <= 0:
+        center = sample_coords[0]
+    else:
+        center_vec = center_vec / center_norm
+        center = SkyCoord(
+            x=center_vec[0],
+            y=center_vec[1],
+            z=center_vec[2],
+            representation_type="cartesian",
+            frame="icrs",
+        )
+    sample_xy = _tangent_plane_xy(sample_coords, center)
+
+    try:
+        from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+
+        linear = LinearNDInterpolator(sample_xy, sample_k_values, fill_value=np.nan)
+        nearest = NearestNDInterpolator(sample_xy, sample_k_values)
+
+        def interpolate(coords):
+            xy = _tangent_plane_xy(coords.icrs, center)
+            values = np.asarray(linear(xy), dtype=float)
+            missing = ~np.isfinite(values)
+            if np.any(missing):
+                values[missing] = np.asarray(nearest(xy[missing]), dtype=float)
+            return values
+
+        return interpolate
+    except Exception:
+        logging.warning("SciPy interpolation unavailable; using inverse-distance DRM K interpolation")
+
+        def interpolate(coords):
+            xy = _tangent_plane_xy(coords.icrs, center)
+            diff = xy[:, None, :] - sample_xy[None, :, :]
+            dist2 = np.sum(diff * diff, axis=2)
+            exact = dist2 <= 1e-16
+            values = np.empty(xy.shape[0], dtype=float)
+            has_exact = np.any(exact, axis=1)
+            if np.any(has_exact):
+                exact_idx = np.argmax(exact[has_exact], axis=1)
+                values[has_exact] = sample_k_values[exact_idx]
+            if np.any(~has_exact):
+                weights = 1.0 / np.maximum(dist2[~has_exact], 1e-12)
+                values[~has_exact] = np.sum(weights * sample_k_values[None, :], axis=1) / np.sum(weights, axis=1)
+            return values
+
+        return interpolate
+
+
+def _set_event_sky_position(event, ra_deg, dec_deg):
+    event.ra = float(ra_deg) * u.deg
+    event.dec = float(dec_deg) * u.deg
+    for ra_name, dec_name in (("RA", "DEC"), ("RA_OBJ", "DEC_OBJ"), ("ra_obj", "dec_obj")):
+        if hasattr(event, ra_name):
+            try:
+                setattr(event, ra_name, float(ra_deg) * u.deg)
+            except Exception:
+                setattr(event, ra_name, float(ra_deg))
+        if hasattr(event, dec_name):
+            try:
+                setattr(event, dec_name, float(dec_deg) * u.deg)
+            except Exception:
+                setattr(event, dec_name, float(dec_deg))
+
+
+def _restore_event_sky_position(event, original_values):
+    for name, existed, value in original_values:
+        if existed:
+            setattr(event, name, value)
+        elif hasattr(event, name):
+            try:
+                delattr(event, name)
+            except Exception:
+                pass
+
+
+def _compute_k_for_sky_position(
+    event,
+    ra_deg,
+    dec_deg,
+    time_bins,
+    energybins,
+    t0,
+    time_weights,
+    e_low_keV,
+    e_high_keV,
+    alpha,
+    beta,
+    epeak_keV,
+    workdir,
+    sample_tag=None,
+):
+    _set_event_sky_position(event, ra_deg, dec_deg)
+    if hasattr(event, "apply_mask_weighting"):
+        event.apply_mask_weighting(ra=float(ra_deg) * u.deg, dec=float(dec_deg) * u.deg)
+
+    pha_files = None
+    if sample_tag is not None:
+        pha_dir = Path(getattr(event, "result_dir", Path(workdir))).joinpath("pha")
+        pha_dir.mkdir(parents=True, exist_ok=True)
+        pha_files = [
+            pha_dir / f"drm_sample_{sample_tag}_bin{idx:03d}.pha"
+            for idx in range(max(len(time_bins) - 1, 0))
+        ]
+
+    try:
+        spectra = event.create_pha(
+            pha_file=pha_files,
+            timebins=time_bins,
+            energybins=None,
+            is_relative=True,
+            T0=t0,
+            mask_weighting=True,
+            recalc=True,
+        )
+    except Exception as exc:
+        if "RA/DEC_OBJ" not in str(exc):
+            raise
+        patched = _patch_pha_ra_dec_comments(Path(getattr(event, "result_dir", Path(workdir))).joinpath("pha"))
+        if patched <= 0:
+            raise
+        logging.warning("Patched RA/DEC unit comments in %d PHA file(s); retrying DRM sample", patched)
+        spectra = event.create_pha(
+            pha_file=pha_files,
+            timebins=time_bins,
+            energybins=None,
+            is_relative=True,
+            T0=t0,
+            mask_weighting=True,
+            recalc=False,
+        )
+
+    spectra = _as_spectrum_list(spectra)
+    n_common = min(len(spectra), len(time_weights))
+    if n_common <= 0:
+        raise ValueError("No spectra returned for representative DRM sample")
+
+    weighted_energy_flux = 0.0
+    weighted_count_rate = 0.0
+    used_weight = 0.0
+    labels = []
+    failed_bins = []
+    zero_weight_bins = 0
+    for idx in range(n_common):
+        weight = float(time_weights[idx])
+        if not np.isfinite(weight) or weight <= 0:
+            zero_weight_bins += 1
+            continue
+        try:
+            energy_flux, count_rate, drm_label = _drm_energy_flux_and_count_rate(
+                _spectrum_drm_source(spectra[idx]),
+                e_low_keV=e_low_keV,
+                e_high_keV=e_high_keV,
+                alpha=alpha,
+                beta=beta,
+                epeak_keV=epeak_keV,
+                allow_default_response=False,
+            )
+        except Exception as exc:
+            failed_bins.append((idx, str(exc)))
+            continue
+        weighted_energy_flux += weight * energy_flux
+        weighted_count_rate += weight * count_rate
+        used_weight += weight
+        labels.append(drm_label)
+
+    if used_weight <= 0 or weighted_count_rate <= 0:
+        # The PCODE-selected skyviews and the generated spectra can occasionally
+        # miss each other after filtering. Try every generated spectrum once
+        # before declaring this sample unusable.
+        retry_weight = 1.0 / float(n_common)
+        for idx in range(n_common):
+            try:
+                energy_flux, count_rate, drm_label = _drm_energy_flux_and_count_rate(
+                    _spectrum_drm_source(spectra[idx]),
+                    e_low_keV=e_low_keV,
+                    e_high_keV=e_high_keV,
+                    alpha=alpha,
+                    beta=beta,
+                    epeak_keV=epeak_keV,
+                    allow_default_response=False,
+                )
+            except Exception as exc:
+                failed_bins.append((idx, str(exc)))
+                continue
+            weighted_energy_flux += retry_weight * energy_flux
+            weighted_count_rate += retry_weight * count_rate
+            used_weight += retry_weight
+            labels.append(drm_label)
+
+    if used_weight <= 0 or weighted_count_rate <= 0:
+        failure_preview = "; ".join(
+            f"bin {idx}: {msg}" for idx, msg in failed_bins[:3]
+        )
+        raise ValueError(
+            "No valid DRM spectra contributed to representative K sample "
+            f"(spectra={len(spectra)}, weighted_bins={n_common - zero_weight_bins}, "
+            f"zero_weight_bins={zero_weight_bins}, drm_failures={len(failed_bins)}"
+            f"{'; ' + failure_preview if failure_preview else ''})"
+        )
+    return float(weighted_energy_flux / weighted_count_rate), labels[0] if labels else "PHA/RSP"
+
+
+def _build_representative_drm_flux_factor_map(
+    event,
+    time_bins,
+    energybins,
+    t0,
+    valid_skyview_indices,
+    workdir,
+    nside,
+    coordsys,
+    pcode_support,
+    pcode_ref,
+    bkg_map,
+    alpha=-1.0,
+    beta=-2.3,
+    epeak_keV=300.0,
+    sample_count=20,
+):
+    """Build a per-pixel K(p) map from representative DRM samples."""
+    candidate_sample_pix = _representative_fov_pixels(
+        pcode_support=pcode_support,
+        pcode_ref=pcode_ref,
+        bkg_map=bkg_map,
+        nside=nside,
+        n_samples=max(sample_count * 4, sample_count),
+    )
+    candidate_sample_coords = _coords_from_hpx_pixels(candidate_sample_pix, nside, coordsys)
+    time_weights = _drm_time_weights(event, time_bins, energybins, t0, valid_skyview_indices)
+    original_values = [
+        (name, hasattr(event, name), getattr(event, name, None))
+        for name in ("ra", "dec", "RA", "DEC", "RA_OBJ", "DEC_OBJ", "ra_obj", "dec_obj")
+    ]
+
+    sample_pix = []
+    sample_ra = []
+    sample_dec = []
+    sample_k = []
+    sample_labels = []
+    try:
+        for idx, coord in enumerate(candidate_sample_coords):
+            ra_deg = float(coord.ra.deg)
+            dec_deg = float(coord.dec.deg)
+            try:
+                k_value, drm_label = _compute_k_for_sky_position(
+                    event=event,
+                    ra_deg=ra_deg,
+                    dec_deg=dec_deg,
+                    time_bins=time_bins,
+                    energybins=energybins,
+                    t0=t0,
+                    time_weights=time_weights,
+                    e_low_keV=float(energybins[0].value),
+                    e_high_keV=float(energybins[1].value),
+                    alpha=alpha,
+                    beta=beta,
+                    epeak_keV=epeak_keV,
+                    workdir=workdir,
+                    sample_tag=f"pix{int(candidate_sample_pix[idx])}_s{idx + 1:02d}",
+                )
+                logging.info(
+                    "DRM K sample %02d/%02d: pix=%d RA=%.5f Dec=%.5f K=%.4e",
+                    len(sample_k) + 1,
+                    sample_count,
+                    int(candidate_sample_pix[idx]),
+                    ra_deg,
+                    dec_deg,
+                    k_value,
+                )
+            except Exception as exc:
+                logging.info(
+                    "Skipping invalid DRM K candidate %02d/%02d at pix=%d RA=%.5f Dec=%.5f: %s",
+                    idx + 1,
+                    len(candidate_sample_pix),
+                    int(candidate_sample_pix[idx]),
+                    ra_deg,
+                    dec_deg,
+                    exc,
+                )
+                continue
+            sample_pix.append(int(candidate_sample_pix[idx]))
+            sample_ra.append(ra_deg)
+            sample_dec.append(dec_deg)
+            sample_k.append(k_value)
+            sample_labels.append(drm_label)
+            if len(sample_k) >= sample_count:
+                break
+    finally:
+        _restore_event_sky_position(event, original_values)
+
+    sample_k = np.asarray(sample_k, dtype=float)
+    sample_pix = np.asarray(sample_pix, dtype=int)
+    sample_ra = np.asarray(sample_ra, dtype=float)
+    sample_dec = np.asarray(sample_dec, dtype=float)
+    finite_samples = np.isfinite(sample_k) & (sample_k > 0)
+    if np.sum(finite_samples) < 3:
+        raise ValueError(f"Only {int(np.sum(finite_samples))} finite DRM K samples; cannot build 2D interpolator")
+
+    interpolator = _build_drm_k_pixel_interpolator(
+        sample_ra,
+        sample_dec,
+        sample_k,
+    )
+    k_map = np.full(hp.nside2npix(int(nside)), np.nan, dtype=float)
+    eval_pix = np.flatnonzero(np.asarray(pcode_support, dtype=bool))
+    eval_coords = _coords_from_hpx_pixels(eval_pix, nside, coordsys)
+    k_map[eval_pix] = interpolator(eval_coords)
+    k_map[~np.isfinite(k_map) | (k_map <= 0)] = np.nan
+
+    print("DRM sampled k(p) values:")
+    for idx, pix in enumerate(sample_pix):
+        pix = int(pix)
+        map_k = k_map[pix] if 0 <= pix < k_map.size else np.nan
+        print(
+            f"  sample {idx + 1:02d}/{len(sample_pix):02d} "
+            f"pix={pix} "
+            f"RA={float(sample_ra[idx]):.5f} "
+            f"Dec={float(sample_dec[idx]):.5f} "
+            f"K_sample={float(sample_k[idx]):.6e} "
+            f"K_map={float(map_k):.6e} "
+            f"DRM={sample_labels[idx]}"
+        )
+
+    sample_table = Table(
+        {
+            "PIX": np.asarray(sample_pix, dtype=np.int64),
+            "RA_DEG": sample_ra,
+            "DEC_DEG": sample_dec,
+            "K": sample_k,
+            "DRM_LABEL": np.asarray(sample_labels, dtype=object),
+        }
+    )
+    return k_map, sample_table
+
+
+def _normalize_hpx_coordsys(coordsys):
+    if coordsys is None:
+        return "icrs"
+
+    if hasattr(coordsys, "name"):
+        raw = str(coordsys.name)
+    else:
+        raw = str(coordsys)
+
+    token = raw.strip().lower()
+    if token.startswith("gal") or "galactic" in token:
+        return "galactic"
+
+    if (
+        "icrs" in token
+        or "fk5" in token
+        or token in {"c", "eq", "equ", "equatorial", "j2000"}
+    ):
+        return "icrs"
+
+    logging.warning("Unknown HEALPix coordsys %r; defaulting to icrs", raw)
+    return "icrs"
+
+
+def _project_batskyimage_to_hpx_contents(
+    image_obj,
+    image_type,
+    is_mosaic_intermediate,
+    nside,
+    coordsys=None,
+):
+
+    if image_obj is None:
+        raise ValueError("BatSkyImage is None")
+    try:
+
+        # use the image native coordinate system
+
+        native_coordsys = getattr(image_obj, "healpix_coordsys", None)
+
+        if native_coordsys is None:
+            native_coordsys = getattr(image_obj, "coordsys", None)
+
+        projection_coordsys = native_coordsys
+        return_coordsys = native_coordsys if native_coordsys is not None else coordsys
+
+        logging.info(
+            "Projecting BatSkyImage with coordsys=%s",
+            projection_coordsys,
+        )
+
+        kwargs = dict(nside=int(nside))
+        if projection_coordsys is not None:
+            kwargs["coordsys"] = projection_coordsys
+        try:
+            hist = image_obj.healpix_projection(**kwargs)
+        except ValueError as exc:
+            if "requested healpix coordinate system" not in str(exc).lower() or "coordsys" not in kwargs:
+                raise
+            logging.warning("healpix_projection coordsys mismatch (%s); retrying without explicit coordsys", exc)
+            kwargs.pop("coordsys", None)
+            hist = image_obj.healpix_projection(**kwargs)
+
+        # Use the healpix-projection slice directly to preserve the native
+        # HPX pixel indexing and avoid shifts from additional reprojection.
+        hist_slice = np.asarray(hist.slice[:, :, :], dtype=float)
+        if hist_slice.ndim == 3 and hist_slice.shape[0] == 1 and hist_slice.shape[2] == 1:
+            contents = hist_slice[0, :, 0]
+        else:
+            contents = np.ravel(hist_slice)
+        return np.ravel(contents), _normalize_hpx_coordsys(return_coordsys)
+
+    except Exception:
+        logging.error(traceback.format_exc())
+        raise ValueError(
+            "Unable to project BatSkyImage into HEALPix"
+
+        )
+
+
+def _compute_partial_coding_map_at_time(event, t0, t_rel, target_nside, coordsys="icrs"):
+    t_start = float(t_rel) - 0.1
+    t_stop = float(t_rel) + 0.1
+    energybins = [15, 350] * u.keV
+    skyview = event.create_skyview(
+        timebins=[t_start, t_stop] * u.s,
+        energybins=energybins,
+        is_relative=True,
+        T0=t0,
+        input_dict=dict(aperture="CALDB:DETECTION", pcodethresh=0.01),
+        recalc=True,
+    )
+    pcode_img_bat = ba.bat_skyimage.BatSkyImage.from_file(skyview.pcodeimg_file)
+
+    native_coordsys = getattr(
+        pcode_img_bat,
+        "healpix_coordsys",
+        None
+    )
+
+    kwargs = dict(
+        nside=int(target_nside)
+    )
+
+    if native_coordsys is not None:
+        kwargs["coordsys"] = native_coordsys
+    elif coordsys is not None:
+        kwargs["coordsys"] = coordsys
+
+    try:
+        hist = pcode_img_bat.healpix_projection(**kwargs)
+    except ValueError as exc:
+        if "requested healpix coordinate system" not in str(exc).lower() or "coordsys" not in kwargs:
+            raise
+        logging.warning("PCODE healpix_projection coordsys mismatch (%s); retrying without explicit coordsys", exc)
+        kwargs.pop("coordsys", None)
+        hist = pcode_img_bat.healpix_projection(**kwargs)
+
+
+    hist_slice = np.asarray(hist.slice[:, :, :], dtype=float)
+    if hist_slice.ndim == 3 and hist_slice.shape[0] == 1 and hist_slice.shape[2] == 1:
+        return hist_slice[0, :, 0]
+    return np.ravel(hist_slice)
+
+
+def _ul_sample_positions_to_pixels(sample_ra, sample_dec, nside, coordsys):
+    coordsys = str(coordsys).strip().lower()
+    if coordsys.startswith("gal"):
+        coords = SkyCoord(ra=np.asarray(sample_ra) * u.deg, dec=np.asarray(sample_dec) * u.deg, frame="icrs")
+        lon = coords.galactic.l.deg
+        lat = coords.galactic.b.deg
+    else:
+        lon = np.asarray(sample_ra, dtype=float)
+        lat = np.asarray(sample_dec, dtype=float)
+    return hp.ang2pix(int(nside), lon, lat, nest=UL_HEALPIX_NESTED, lonlat=True)
+
+
+def _external_ul_samples(workdir, ul_map, nside, coordsys, sample_count=8192):
+    fit_file = _find_ext_map_file(workdir)
+    if fit_file is None:
+        return None
+    probability = _load_probability_map(workdir, fit_file)
+    sample_ra, sample_dec = _sample_ext_positions(
+        probability,
+        sample_count,
+        seed=13579,
+    )
+    sample_pix = _ul_sample_positions_to_pixels(sample_ra, sample_dec, nside, coordsys)
+    sample_values = np.asarray(ul_map, dtype=float)[sample_pix]
+    return fit_file, probability, sample_ra, sample_dec, sample_values
+
+
+def _plot_ul_distribution_from_external_samples(ax_hist, ul_values):
+    finite_values = np.asarray(ul_values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values) & (finite_values > 0)]
+    if finite_values.size == 0:
+        ax_hist.text(0.5, 0.5, "No finite UL samples inside BAT PC>0.01", ha="center", va="center", transform=ax_hist.transAxes)
+        ax_hist.set_axis_off()
+        return
+
+    vmin = float(np.nanmin(finite_values))
+    vmax = float(np.nanmax(finite_values))
+    if vmax <= vmin:
+        bins = 20
+    else:
+        bins = np.logspace(np.log10(vmin), np.log10(vmax), 48)
+    ax_hist.hist(finite_values, bins=bins, histtype="step", color="black", linewidth=1.8)
+    p16, median, p84 = np.nanpercentile(finite_values, [16, 50, 84])
+    ax_hist.axvspan(p16, p84, color="tab:blue", alpha=0.12, label="16-84%")
+    ax_hist.axvline(median, color="tab:blue", linestyle="--", linewidth=1.6, label=f"Median {median:.2e}")
+    ax_hist.set_xscale("log")
+    ax_hist.set_xlabel("Flux upper limit [erg cm$^{-2}$ s$^{-1}$]")
+    ax_hist.set_ylabel("samples")
+    ax_hist.legend(loc="best", fontsize=8)
+
+
+def _plot_mosaic_flux_ul_with_pcode_contours(event, t0, ul_map, nside, tmin, tmax, out_png, coordsys="icrs", workdir=None):
+    coordsys = _normalize_hpx_coordsys(coordsys)
+    ul_map_plot = np.asarray(ul_map, dtype=float).copy()
+    ul_map_plot[ul_map_plot == hp.UNSEEN] = np.nan
+    pcode_tmin = _compute_partial_coding_map_at_time(event, t0, tmin, nside, coordsys=coordsys)
+    pcode_tmax = _compute_partial_coding_map_at_time(event, t0, tmax, nside, coordsys=coordsys)
+    # Keep the UL support produced at compute-time; for long intervals, clipping
+    # only on endpoint PCODE maps can erase most of the valid slew coverage.
+    if not np.any(np.isfinite(ul_map_plot)):
+        pcode_support = (
+            (np.isfinite(pcode_tmin) & (pcode_tmin >= 0.00))
+            | (np.isfinite(pcode_tmax) & (pcode_tmax >= 0.00))
+        )
+        ul_map_plot[~pcode_support] = np.nan
+
+    ext_samples = None
+    if workdir is not None:
+        try:
+            ext_samples = _external_ul_samples(workdir, ul_map_plot, nside, coordsys)
+        except Exception:
+            logging.warning("Unable to sample UL map with external localization: %s", traceback.format_exc())
+
+    finite = np.isfinite(ul_map_plot)
+    if np.any(finite):
+        vmin = np.nanpercentile(ul_map_plot[finite], 5)
+        vmax = np.nanpercentile(ul_map_plot[finite], 99)
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            vmin = np.nanmin(ul_map_plot[finite])
+            vmax = np.nanmax(ul_map_plot[finite])
+    else:
+        vmin, vmax = 0.0, 1.0
+
+    fig = plt.figure(figsize=((17, 5)))
+
+    ax_zoom_rect = None
+    ax_hist = None
+    if ext_samples is not None:
+        fit_file, probability, _, _, sample_ul_values = ext_samples
+        center_ra, center_dec, zoom_radius = _ext_zoom_region(probability)
+        ax_zoom_rect = plt.axes(
+            [-.05, 0.3, 0.4, 0.4],
+            projection="astro degrees zoom",
+            center=f"{center_ra}d {center_dec}d",
+            radius=f"{zoom_radius} deg",
+        )
+        ax_zoom_rect.coords[0].set_major_formatter("d.d")
+        ax_zoom_rect.coords[1].set_major_formatter("d.d")
+        ax_zoom_rect.grid()
+        map_ext(fit_file, workdir, ax_zoom_rect, add_legend=True, contours_only=True)
+        ax_hist = fig.add_axes([0.75, 0.30, 0.16, 0.45])
+    else:
+        sample_ul_values = None
+
+    ax_globe_bounds = [0.25, 0.07, 0.42, 0.86] if ax_hist is not None else [0.05, 0.06, 0.90, 0.88]
+    ax_globe = plt.axes(ax_globe_bounds, projection="astro degrees mollweide")
+    ax_globe.grid()
+    if ax_zoom_rect is not None:
+        ax_globe.mark_inset_axes(ax_zoom_rect)
+        ax_globe.connect_inset_axes(ax_zoom_rect, "upper right")
+        ax_globe.connect_inset_axes(ax_zoom_rect, "lower right")
+        map_ext(fit_file, workdir, ax_globe, add_legend=False, contours_only=True)
+
+    norm = LogNorm(vmin=max(float(vmin), np.finfo(float).tiny), vmax=float(vmax)) if vmax > 0 else None
+    im = ax_globe.imshow_hpx(
+        (ul_map_plot, coordsys),
+        nested=UL_HEALPIX_NESTED,
+        cmap="viridis_r",
+        alpha=0.65,
+        zorder=1,
+        norm=norm,
+    )
+    if ax_zoom_rect is not None:
+        ax_zoom_rect.imshow_hpx(
+            (ul_map_plot, coordsys),
+            nested=UL_HEALPIX_NESTED,
+            cmap="viridis_r",
+            alpha=0.65,
+            zorder=1,
+            norm=norm,
+        )
+
+    ax_globe.contour_hpx(
+        (pcode_tmin, coordsys),
+        nested=UL_HEALPIX_NESTED,
+        colors=["blue"],
+        levels=[0.01],
+        linewidths=1.4,
+        linestyles=["-"],
+        zorder=3,
+    )
+    ax_globe.contour_hpx(
+        (pcode_tmax, coordsys),
+        nested=UL_HEALPIX_NESTED,
+        colors=["orange"],
+        levels=[0.01],
+        linewidths=1.4,
+        linestyles=["-"],
+        zorder=3,
+    )
+    if ax_zoom_rect is not None:
+        ax_zoom_rect.contour_hpx(
+            (pcode_tmin, coordsys),
+            nested=UL_HEALPIX_NESTED,
+            colors=["blue"],
+            levels=[0.01],
+            linewidths=1.4,
+            linestyles=["-"],
+            zorder=3,
+        )
+        ax_zoom_rect.contour_hpx(
+            (pcode_tmax, coordsys),
+            nested=UL_HEALPIX_NESTED,
+            colors=["orange"],
+            levels=[0.01],
+            linewidths=1.4,
+            linestyles=["-"],
+            zorder=3,
+        )
+
+    legend_handles = [
+        Line2D([0], [0], color="blue", linestyle="-", linewidth=1.5, label=f"BAT FOV @ $t_0$  {tmin:+} s"),
+        Line2D([0], [0], color="orange", linestyle="-", linewidth=1.5, label=f"BAT FOV @ $t_0$  {tmax:+} s"),
+    ]
+
+    ax_globe.legend(handles=legend_handles, loc="lower right", frameon=True, bbox_to_anchor=(1.05, -0.22))
+    if ax_hist is not None:
+        # cax = fig.add_axes([0.75, 0.0, 0.01, 0.4])
+        cbar = fig.colorbar(
+                        im,
+                        ax=ax_globe,
+                        orientation="vertical",
+                        shrink=0.6,
+                        aspect=20,
+                        pad=0.05,
+                        )
+    else:
+        cbar = fig.colorbar(im, ax=ax_globe, fraction=0.035, pad=0.02)
+    cbar.set_label("Flux upper limit [erg cm$^{-2}$ s$^{-1}$]")
+    if ax_hist is not None and sample_ul_values is not None:
+        _plot_ul_distribution_from_external_samples(ax_hist, sample_ul_values)
+    fig.savefig(out_png, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+
 
 def log_imaging(detected_sources):
     try:
